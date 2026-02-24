@@ -1,3 +1,4 @@
+// src/components/ElementsTable/ElementsTable.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     DndContext,
@@ -19,8 +20,12 @@ import { Button } from "@/components/ui/button";
 import { Trash2, Pencil, X } from "lucide-react";
 import axiosInstance from "@/lib/axios";
 
+// ⬇️ dopasuj ścieżkę importu do miejsca gdzie wrzucisz modal
+import EditElementModal, { EditableElement } from "@/components/EditElementModal/EditElementModal";
+
 type ElementRow = {
     id?: string | number;
+    clientId?: string; // ✅ ważne
     symbol?: string;
     name: string;
     unit: string;
@@ -28,13 +33,16 @@ type ElementRow = {
     value: number;
     quantity?: number;
     group?: number | null;
+    kind?: "custom" | "catalog" | "tax";
+
+    // tax
     isTax?: boolean;
     taxPercentage?: number;
     taxTarget?: number | null;
 };
 
 type Group = {
-    id: number;           // 0 = „Brak podgrupy”
+    id: number; // 0 = „Brak podgrupy”
     name: string;
     color?: string;
 };
@@ -158,17 +166,19 @@ function SortableRow({
                          groupColor,
                          onRemoveFromGroup,
                          onDelete,
+                         onEdit,
                      }: {
     el: ElementRow & { _id: string };
     groupColor?: string;
     onRemoveFromGroup: (id: string) => void;
     onDelete: (id: string) => void;
+    onEdit: (id: string) => void;
 }) {
     const isTaxElement = el.isTax === true;
-    
+
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: el._id,
-        disabled: isTaxElement, // Disable drag for tax elements
+        disabled: isTaxElement, // tax bez drag
     });
 
     const style: React.CSSProperties = {
@@ -184,12 +194,13 @@ function SortableRow({
         <tr
             ref={setNodeRef}
             style={style}
-            className={`border-t hover:bg-accent/40 ${isTaxElement ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} select-none`}
+            className={`border-t hover:bg-accent/40 ${isTaxElement ? "cursor-default" : "cursor-grab active:cursor-grabbing"} select-none`}
             {...attributes}
             {...(isTaxElement ? {} : listeners)}
         >
-            <td className="px-3 py-2 align-top whitespace-nowrap">
-                {el.group ?? "—"}
+            {/* ✅ Podstawa = symbol */}
+            <td className="px-3 py-2 align-top whitespace-nowrap font-mono">
+                {el.symbol?.trim() ? el.symbol : "—"}
             </td>
 
             <td className="px-3 py-2 align-top">
@@ -199,17 +210,36 @@ function SortableRow({
             </td>
 
             <td className="px-3 py-2 align-top whitespace-nowrap">{el.unit}</td>
+
             <td className="px-3 py-2 align-top text-right tabular-nums whitespace-nowrap">
-                {isTaxElement ? '—' : (el.quantity ?? 1)}
+                {isTaxElement ? "—" : (el.quantity ?? 1)}
             </td>
+
             <td className="px-3 py-2 align-top text-right tabular-nums whitespace-nowrap">
-                {isTaxElement ? '—' : `${el.price.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł`}
+                {isTaxElement ? "—" : `${el.price.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł`}
             </td>
+
             <td className="px-3 py-2 align-top text-right font-medium tabular-nums whitespace-nowrap">
                 {el.value.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł
             </td>
+
             <td className="px-3 py-2 align-top">
                 <div className="flex items-center gap-1 justify-end">
+                    {/* Edit */}
+                    <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onEdit(el._id);
+                        }}
+                        title="Edytuj"
+                        aria-label="Edytuj"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    >
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+
                     {isInGroup && !isTaxElement && (
                         <Button
                             size="icon"
@@ -225,6 +255,7 @@ function SortableRow({
                             <X className="h-4 w-4" />
                         </Button>
                     )}
+
                     <Button
                         size="icon"
                         variant="ghost"
@@ -244,8 +275,14 @@ function SortableRow({
     );
 }
 
-const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, initialContent, wspregValue = 1.0 }) => {
-    // READ: localStorage → API content → props
+const ElementsTable: React.FC<Props> = ({
+                                            projectId,
+                                            elements,
+                                            initialGroups,
+                                            initialContent,
+                                            wspregValue = 1.0,
+                                        }) => {
+    // READ localStorage (fallback)
     const saved: ProjectContent | null = useMemo(() => {
         try {
             const raw = localStorage.getItem(storageKey(projectId));
@@ -255,96 +292,99 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         }
     }, [projectId]);
 
+    // ✅ API FIRST (localStorage tylko fallback)
     const [groups, setGroups] = useState<Group[]>(() => {
-        const fromLS = saved?.groups;
         const fromAPI = initialContent?.groups ?? initialGroups;
+        const fromLS = saved?.groups;
+
         const base =
-            (fromLS && fromLS.length) ? fromLS :
-                (fromAPI && fromAPI.length) ? fromAPI :
+            (fromAPI && fromAPI.length) ? fromAPI :
+                (fromLS && fromLS.length) ? fromLS :
                     [
                         { id: 1, name: "Podgrupa 1", color: "#fef08a" },
                         { id: 2, name: "Podgrupa 2", color: "#bfdbfe" },
                     ];
+
         const hasUngrouped = base.some((g) => g.id === UNGROUPED_ID);
         return hasUngrouped ? base : [{ id: UNGROUPED_ID, name: "Brak podgrupy", color: "#ffffff" }, ...base];
     });
 
     const mapFrom = (src?: (ElementRow & { order?: number })[], fb?: ElementRow[]) => {
-        if (src && src.length) {
-            return src
-                .slice()
-                .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-                .map((el, idx) => ({
+        const list = (src && src.length) ? src : (fb && fb.length ? fb : []);
+
+        return list
+            .slice()
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+            .map((el, idx) => {
+                const clientId = (el as any).clientId ?? null;
+
+                return {
                     ...el,
+                    clientId: clientId ?? undefined,
                     symbol: el.symbol ?? "",
                     quantity: el.quantity ?? 1,
                     group: typeof el.group === "number" ? el.group : UNGROUPED_ID,
-                    _id: (el.id ?? `${el.name}|${el.unit}|${el.price}|${el.value}|${idx}`).toString(),
-                }));
-        }
-        if (fb && fb.length) {
-            return fb.map((el, idx) => ({
-                ...el,
-                symbol: el.symbol ?? "",
-                quantity: el.quantity ?? 1,
-                group: typeof el.group === "number" ? el.group : UNGROUPED_ID,
-                _id: (el.id ?? `${el.name}|${el.unit}|${el.price}|${el.value}|${idx}`).toString(),
-            }));
-        }
-        return [];
+                    // ✅ stabilne _id: clientId > id > fallback
+                    _id: (clientId ?? el.id ?? `fallback-${projectId}-${idx}`).toString(),
+                };
+            });
     };
 
     const [items, setItems] = useState<(ElementRow & { _id: string })[]>(() => {
-        return mapFrom(saved?.elements, mapFrom(initialContent?.elements, elements));
+        const apiSrc = initialContent?.elements ?? elements;
+        if (apiSrc && apiSrc.length) return mapFrom(apiSrc);
+        return mapFrom(saved?.elements, []);
     });
 
-    // Apply wspreg multiplication for display only (non-tax elements)
+    // WSPREG: tylko do wyświetlania, nie zmieniamy bazowych items
     const displayItems = useMemo(() => {
-        return items.map(item => {
-            if (item.isTax || wspregValue === 1.0) {
-                return item; // Don't multiply tax elements or if wspreg is 1.0
-            }
+        return items.map((item) => {
+            if (item.isTax || wspregValue === 1.0) return item;
             return {
                 ...item,
                 price: Number((item.price * wspregValue).toFixed(2)),
-                value: Number((item.value * wspregValue).toFixed(2))
+                value: Number((item.value * wspregValue).toFixed(2)),
             };
         });
     }, [items, wspregValue]);
 
-    // 🔧 NOWE: zsynchronizuj items z propsami, gdy „na zewnątrz" przybyło elementów lub zmieniono wartości
+    // Sync items z propsów (po refetch/reprice)
     const elementsLen = Array.isArray(elements) ? elements.length : -1;
     const initialElementsLen = Array.isArray(initialContent?.elements) ? (initialContent!.elements as any[]).length : -1;
-    
-    // Create a hash of element values to detect changes beyond just length
+
     const propsElementsHash = useMemo(() => {
         const apiSrc = (initialElementsLen > 0 ? initialContent!.elements! : (elementsLen > 0 ? elements : [])) as (ElementRow & { order?: number })[];
-        return JSON.stringify(apiSrc.map(el => ({ id: el.id, name: el.name, price: el.price, value: el.value })));
+        return JSON.stringify(
+            apiSrc.map((el: any) => ({
+                clientId: el.clientId ?? null,
+                id: el.id ?? null,
+                name: el.name,
+                price: el.price,
+                value: el.value,
+                group: el.group ?? 0,
+                isTax: el.isTax ?? false,
+                taxPercentage: el.taxPercentage ?? null,
+                taxTarget: el.taxTarget ?? null,
+            }))
+        );
     }, [initialElementsLen, elementsLen, initialContent, elements]);
-    
-    const lastPropsHashRef = useRef<string>('');
+
+    const lastPropsHashRef = useRef<string>("");
 
     useEffect(() => {
-        // wybierz sensowne źródło z propsów (najpierw initialContent.elements, potem elements)
         const apiSrc = (initialElementsLen > 0 ? initialContent!.elements! : (elementsLen > 0 ? elements : [])) as (ElementRow & { order?: number })[];
         if (!apiSrc || apiSrc.length === 0) return;
 
-        // Update if length changed OR if content hash changed (reprice scenario)
         const shouldUpdate = apiSrc.length !== items.length || propsElementsHash !== lastPropsHashRef.current;
-        
+
         if (shouldUpdate) {
-            console.log('[ElementsTable] Syncing items from props', { 
-                apiLength: apiSrc.length, 
-                currentLength: items.length,
-                hashChanged: propsElementsHash !== lastPropsHashRef.current 
-            });
             lastPropsHashRef.current = propsElementsHash;
             setItems(mapFrom(apiSrc));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [projectId, initialElementsLen, elementsLen, propsElementsHash]);
 
-    // 🔧 NOWE: zsynchronizuj groups z propsami
+    // Sync groups z propsów
     useEffect(() => {
         const fromAPI = initialContent?.groups ?? initialGroups;
         if (fromAPI && fromAPI.length > 0) {
@@ -354,7 +394,7 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         }
     }, [initialContent?.groups, initialGroups]);
 
-    // --- Edycja nazwy podgrupy (inline) ---
+    // --- Edycja nazwy podgrupy ---
     const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
     const [editingGroupName, setEditingGroupName] = useState<string>("");
 
@@ -362,6 +402,7 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         setEditingGroupId(g.id);
         setEditingGroupName(g.name);
     };
+
     const commitEditGroup = () => {
         if (editingGroupId === null) return;
         const name = editingGroupName.trim();
@@ -373,20 +414,22 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         setGroups((prev) => prev.map((g) => (g.id === editingGroupId ? { ...g, name } : g)));
         setEditingGroupId(null);
         setEditingGroupName("");
-        // autosave -> useEffect
     };
+
     const cancelEditGroup = () => {
         setEditingGroupId(null);
         setEditingGroupName("");
     };
 
-    // WRITE: localStorage + API (debounce)
+    // WRITE: localStorage
     useEffect(() => {
         const payload: ProjectContent = {
             version: CONTENT_VERSION,
             groups,
             elements: items.map((el, order) => ({
+                clientId: (el as any).clientId ?? el._id, // ✅ zapisujemy clientId
                 id: el.id ?? null,
+                kind: el.kind ?? (el.isTax ? "tax" : "catalog"),
                 symbol: el.symbol ?? "",
                 name: el.name,
                 unit: el.unit,
@@ -404,13 +447,14 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         };
         try {
             localStorage.setItem(storageKey(projectId), JSON.stringify(payload));
-        } catch { /* ignore */ }
+        } catch {}
     }, [projectId, groups, items]);
 
+    // WRITE: API (debounce)
     const saveTimerRef = useRef<number | null>(null);
     const isInitialMountForSave = useRef(true);
-    const lastPropsHashForSave = useRef<string>('');
-    
+    const lastPropsHashForSave = useRef<string>("");
+
     const scheduleApiSave = useCallback(() => {
         if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = window.setTimeout(async () => {
@@ -418,7 +462,9 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
                 version: CONTENT_VERSION,
                 groups,
                 elements: items.map((el, order) => ({
+                    clientId: (el as any).clientId ?? el._id, // ✅
                     id: el.id ?? null,
+                    kind: el.kind ?? (el.isTax ? "tax" : "catalog"),
                     symbol: el.symbol ?? "",
                     name: el.name,
                     unit: el.unit,
@@ -434,6 +480,7 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
                     }),
                 })),
             };
+
             try {
                 await axiosInstance.patch(`/api/projects/${projectId}/`, { content: payload });
             } catch (e) {
@@ -443,86 +490,69 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
     }, [projectId, groups, items]);
 
     useEffect(() => {
-        // Skip auto-save on initial mount
         if (isInitialMountForSave.current) {
             isInitialMountForSave.current = false;
             lastPropsHashForSave.current = propsElementsHash;
             return;
         }
-        
-        // Skip auto-save when props change (external update like reprice)
+
+        // jeśli przyszły zmiany z zewnątrz (np. reprice/refetch) – nie autosave
         if (lastPropsHashForSave.current !== propsElementsHash) {
-            console.log('[ElementsTable] Props changed (hash), skipping auto-save');
             lastPropsHashForSave.current = propsElementsHash;
             return;
         }
-        
+
         scheduleApiSave();
-        return () => { if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current); };
+        return () => {
+            if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+        };
     }, [scheduleApiSave, propsElementsHash]);
 
-    // --- DYNAMIC TAX RECALCULATION ---
-    // Recalculate tax values whenever items change
-    const lastTaxRecalcRef = useRef<string>('');
-    
-    useEffect(() => {
-        // Create a hash of non-tax items to detect changes
-        const nonTaxItems = items.filter(el => !el.isTax);
-        const itemsHash = JSON.stringify(nonTaxItems.map(el => ({ 
-            id: el._id, 
-            value: el.value, 
-            group: el.group 
-        })));
-        
-        // Only recalculate if non-tax items have changed
-        if (itemsHash === lastTaxRecalcRef.current) {
-            return;
-        }
-        
-        lastTaxRecalcRef.current = itemsHash;
-        
-        let needsUpdate = false;
-        const updatedItems = items.map((el) => {
-            // Only process tax elements
-            if (!el.isTax || typeof el.taxPercentage !== 'number') {
-                return el;
-            }
+    // --- TAX RECALC ---
+    const lastTaxRecalcRef = useRef<string>("");
 
-            // Calculate base total (excluding all taxes)
+    useEffect(() => {
+        const nonTaxItems = items.filter((el) => !el.isTax);
+        const itemsHash = JSON.stringify(
+            nonTaxItems.map((el) => ({ id: el._id, value: el.value, group: el.group }))
+        );
+
+        if (itemsHash === lastTaxRecalcRef.current) return;
+        lastTaxRecalcRef.current = itemsHash;
+
+        let needsUpdate = false;
+
+        const updatedItems = items.map((el) => {
+            if (!el.isTax || typeof el.taxPercentage !== "number") return el;
+
             let baseTotal = 0;
-            
-            if (el.taxTarget === null) {
-                // Tax applies to whole project
+
+            if (el.taxTarget === null || el.taxTarget === undefined) {
                 baseTotal = items.reduce((acc, item) => {
-                    if (item.isTax) return acc; // Exclude taxes
+                    if (item.isTax) return acc;
                     return acc + (Number(item.value) || 0);
                 }, 0);
             } else {
-                // Tax applies to specific group
                 baseTotal = items.reduce((acc, item) => {
-                    if (item.isTax) return acc; // Exclude taxes
-                    if ((item.group ?? 0) !== el.taxTarget) return acc; // Only items in target group
+                    if (item.isTax) return acc;
+                    if ((item.group ?? 0) !== el.taxTarget) return acc;
                     return acc + (Number(item.value) || 0);
                 }, 0);
             }
 
             const newValue = Number(((baseTotal * el.taxPercentage) / 100).toFixed(2));
-            
-            // Check if value needs updating
+
             if (Math.abs(newValue - (Number(el.value) || 0)) > 0.01) {
                 needsUpdate = true;
                 return { ...el, value: newValue };
             }
-            
             return el;
         });
 
-        if (needsUpdate) {
-            setItems(updatedItems);
-        }
+        if (needsUpdate) setItems(updatedItems);
     }, [items]);
 
-    // Akcje UI
+    // --- UI actions ---
     const handleAddGroup = () => {
         const existingIds = groups.map((g) => g.id);
         let newId = 1;
@@ -546,6 +576,57 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
 
     const handleDeleteElement = (elementId: string) => {
         setItems((prev) => prev.filter((el) => el._id !== elementId));
+    };
+
+    // --- EDIT MODAL ---
+    const [editOpen, setEditOpen] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
+
+    const editingElement = useMemo(() => {
+        if (!editingId) return null;
+        const base = items.find((x) => x._id === editingId);
+        return base ? (base as unknown as EditableElement) : null;
+    }, [editingId, items]);
+
+    const openEdit = (id: string) => {
+        setEditingId(id);
+        setEditOpen(true);
+    };
+
+    const saveEdit = (updated: EditableElement) => {
+        setItems((prev) =>
+            prev.map((el) => {
+                if (el._id !== updated._id) return el;
+
+                const isTax = updated.isTax === true;
+
+                if (isTax) {
+                    // tax: zostaw value, i tak przeliczy efekt
+                    return {
+                        ...el,
+                        ...updated,
+                        clientId: updated.clientId ?? el.clientId ?? el._id,
+                        kind: updated.kind ?? el.kind ?? "tax",
+                    } as any;
+                }
+
+                // non-tax: przelicz value na bazowych danych
+                const q = Number(updated.quantity ?? el.quantity ?? 1) || 1;
+                const p = Number(updated.price ?? el.price ?? 0) || 0;
+                const v = Number((q * p).toFixed(2));
+
+                return {
+                    ...el,
+                    ...updated,
+                    clientId: updated.clientId ?? el.clientId ?? el._id,
+                    kind: updated.kind ?? el.kind ?? "custom",
+                    quantity: q,
+                    price: Number(p.toFixed(2)),
+                    value: v,
+                    group: typeof updated.group === "number" ? updated.group : (el.group ?? UNGROUPED_ID),
+                } as any;
+            })
+        );
     };
 
     // Drag & Drop
@@ -591,7 +672,7 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
         }
     };
 
-    // --- PODSUMOWANIA (use display values for totals) ---
+    // Totals (na displayItems)
     const groupTotals = useMemo(() => {
         const map = new Map<number, number>();
         for (const el of displayItems) {
@@ -612,109 +693,119 @@ const ElementsTable: React.FC<Props> = ({ projectId, elements, initialGroups, in
     );
 
     return (
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <div className="overflow-x-auto rounded-lg border w-full">
-                <table className="table-auto w-full border-collapse text-sm">
-                    <colgroup>
-                        <col className="w-[8%]" />
-                        <col className="w-auto" />
-                        <col />
-                        <col />
-                        <col />
-                        <col />
-                    </colgroup>
+        <>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <div className="overflow-x-auto rounded-lg border w-full">
+                    <table className="table-auto w-full border-collapse text-sm">
+                        <colgroup>
+                            <col className="w-[10%]" />
+                            <col className="w-auto" />
+                            <col className="w-[10%]" />
+                            <col className="w-[10%]" />
+                            <col className="w-[12%]" />
+                            <col className="w-[12%]" />
+                            <col className="w-[10%]" />
+                        </colgroup>
 
-                    <thead>
-                    <tr className="bg-muted/60 text-left">
-                        <th className="px-3 py-2 whitespace-nowrap">
-                            <div className="flex items-center gap-2">
-                                <span>Podstawa</span>
-                                <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    onClick={handleAddGroup}
-                                    title="Dodaj podgrupę"
-                                    aria-label="Dodaj podgrupę"
-                                >
-                                    ➕
-                                </Button>
-                            </div>
-                        </th>
-                        <th className="px-3 py-2 whitespace-nowrap">Opis</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Jednostka</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Ilość</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Cena</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Suma</th>
-                        <th className="px-3 py-2 whitespace-nowrap">Akcje</th>
-                    </tr>
-                    </thead>
+                        <thead>
+                        <tr className="bg-muted/60 text-left">
+                            <th className="px-3 py-2 whitespace-nowrap">
+                                <div className="flex items-center gap-2">
+                                    <span>Podstawa</span>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        onClick={handleAddGroup}
+                                        title="Dodaj podgrupę"
+                                        aria-label="Dodaj podgrupę"
+                                    >
+                                        ➕
+                                    </Button>
+                                </div>
+                            </th>
+                            <th className="px-3 py-2 whitespace-nowrap">Opis</th>
+                            <th className="px-3 py-2 whitespace-nowrap">Jednostka</th>
+                            <th className="px-3 py-2 whitespace-nowrap">Ilość</th>
+                            <th className="px-3 py-2 whitespace-nowrap">Cena</th>
+                            <th className="px-3 py-2 whitespace-nowrap">Suma</th>
+                            <th className="px-3 py-2 whitespace-nowrap">Akcje</th>
+                        </tr>
+                        </thead>
 
-                    <tbody>
-                    {orderedGroups.map((group) => {
-                        const groupItems = displayItems
-                            .filter((el) => (el.group ?? UNGROUPED_ID) === group.id)
-                            .sort(
-                                (a, b) =>
-                                    displayItems.findIndex((x) => x._id === a._id) - displayItems.findIndex((x) => x._id === b._id)
+                        <tbody>
+                        {orderedGroups.map((group) => {
+                            const groupItems = displayItems
+                                .filter((el) => (el.group ?? UNGROUPED_ID) === group.id)
+                                .sort(
+                                    (a, b) =>
+                                        displayItems.findIndex((x) => x._id === a._id) -
+                                        displayItems.findIndex((x) => x._id === b._id)
+                                );
+
+                            const subtotal = groupTotals.get(group.id) ?? 0;
+
+                            return (
+                                <React.Fragment key={group.id}>
+                                    <GroupHeaderRow
+                                        group={group}
+                                        isEditing={editingGroupId === group.id}
+                                        editingName={editingGroupName}
+                                        onStartEdit={startEditGroup}
+                                        onEditChange={setEditingGroupName}
+                                        onEditCommit={commitEditGroup}
+                                        onEditCancel={cancelEditGroup}
+                                        onColor={handleColorChange}
+                                        onDelete={handleDeleteGroup}
+                                    />
+
+                                    <SortableContext items={groupItems.map((x) => x._id)} strategy={verticalListSortingStrategy}>
+                                        {groupItems.map((el) => (
+                                            <SortableRow
+                                                key={el._id}
+                                                el={el}
+                                                groupColor={group.color}
+                                                onRemoveFromGroup={handleRemoveFromGroup}
+                                                onDelete={handleDeleteElement}
+                                                onEdit={openEdit}
+                                            />
+                                        ))}
+                                    </SortableContext>
+
+                                    <tr className="bg-muted/30">
+                                        <td className="px-3 py-2 text-right font-medium" colSpan={6}>
+                                            Suma podgrupy:
+                                        </td>
+                                        <td className="px-3 py-2 text-right font-semibold tabular-nums whitespace-nowrap">
+                                            {subtotal.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł
+                                        </td>
+                                    </tr>
+                                </React.Fragment>
                             );
+                        })}
+                        </tbody>
 
-                        const subtotal = groupTotals.get(group.id) ?? 0;
+                        <tfoot>
+                        <tr className="bg-muted/60">
+                            <td className="px-3 py-2 text-right font-semibold" colSpan={6}>
+                                Suma projektu:
+                            </td>
+                            <td className="px-3 py-2 text-right font-bold tabular-nums whitespace-nowrap">
+                                {overallTotal.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł
+                            </td>
+                        </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </DndContext>
 
-                        return (
-                            <React.Fragment key={group.id}>
-                                <GroupHeaderRow
-                                    group={group}
-                                    isEditing={editingGroupId === group.id}
-                                    editingName={editingGroupName}
-                                    onStartEdit={startEditGroup}
-                                    onEditChange={setEditingGroupName}
-                                    onEditCommit={commitEditGroup}
-                                    onEditCancel={cancelEditGroup}
-                                    onColor={handleColorChange}
-                                    onDelete={handleDeleteGroup}
-                                />
-
-                                <SortableContext
-                                    items={groupItems.map((x) => x._id)}
-                                    strategy={verticalListSortingStrategy}
-                                >
-                                    {groupItems.map((el) => (
-                                        <SortableRow 
-                                            key={el._id} 
-                                            el={el} 
-                                            groupColor={group.color}
-                                            onRemoveFromGroup={handleRemoveFromGroup}
-                                            onDelete={handleDeleteElement}
-                                        />
-                                    ))}
-                                </SortableContext>
-
-                                <tr className="bg-muted/30">
-                                    <td className="px-3 py-2 text-right font-medium" colSpan={6}>
-                                        Suma podgrupy:
-                                    </td>
-                                    <td className="px-3 py-2 text-right font-semibold tabular-nums whitespace-nowrap">
-                                        {subtotal.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł
-                                    </td>
-                                </tr>
-                            </React.Fragment>
-                        );
-                    })}
-                    </tbody>
-
-                    <tfoot>
-                    <tr className="bg-muted/60">
-                        <td className="px-3 py-2 text-right font-semibold" colSpan={6}>
-                            Suma projektu:
-                        </td>
-                        <td className="px-3 py-2 text-right font-bold tabular-nums whitespace-nowrap">
-                            {overallTotal.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł
-                        </td>
-                    </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </DndContext>
+            <EditElementModal
+                open={editOpen}
+                onClose={() => setEditOpen(false)}
+                element={editingElement}
+                groups={groups}
+                onSave={saveEdit}
+            />
+        </>
     );
 };
 
